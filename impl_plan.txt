@@ -1,0 +1,515 @@
+Act as a Senior Digital IC Design and Verification Engineer specializing in RISC-V architectures. Two years ago, my team designed a 32-bit RISC-V processor core implementing the RV32IMAFB (Integer, Multiply/Divide, Atomic, Single-Precision Floating-Point, Bit-Manipulation) instruction set in Verilog/SystemVerilog. However, there are unresolved pipeline bugs, forwarding issues, and edge-case failures.
+
+My objective is to systematically debug the existing RTL, fix all architectural issues, and build a highly rigorous, production-grade verification environment from scratch.
+
+I need you to guide me through this process and generate the necessary code. We will execute this in 4 distinct phases. Please acknowledge this plan, and do not generate the testbenches until I provide the RTL in the next prompt.
+
+### PHASE 1: RTL Code Review & Bug Fixing
+- I will provide the Verilog RTL module by module (e.g., Fetch, Decode, ALU, FPU, Memory, Hazard Unit).
+- I will describe the symptoms of the bugs I remember.
+- You will analyze the code for pipeline hazards, critical path delays, latch inferences, and state machine lockups, then provide the corrected, synthesizable Verilog code.
+
+### PHASE 2: Comprehensive Unit Testing (SystemVerilog)
+- You will write detailed SystemVerilog testbenches for critical subsystems.
+- Focus areas: The FPU (rounding modes, NaN/Infinity handling), the Divider (latency handling), and the Hazard/Forwarding Unit.
+- Testbenches must include self-checking mechanisms, randomized inputs ($urandom), and edge-case assertions.
+
+### PHASE 3: Software-Driven Integration Tests (C & Assembly)
+- You will write bare-metal C test programs and inline assembly scripts to stress-test the entire pipeline.
+- You will provide a customized linker script (`.ld`) and the boot assembly (`crt0.S` / `boot.S`) required to compile these tests using the `riscv32-unknown-elf-gcc` toolchain.
+- The C tests should cover recursive functions (to test the stack), floating-point math, and bit-manipulation edge cases.
+
+### PHASE 4: Golden Model / Trace Verification
+- We need to verify my core's execution against a Golden Model (like Spike or Whisper ISS).
+- You will write a top-level Verilog testbench that logs a standardized execution trace (PC, Instruction Hex, Register Writeback Address, and Writeback Data) into a `.txt` file every clock cycle.
+- You will provide a Python script to automatically diff this trace log against a Spike execution trace to catch silent data corruptions.
+
+If you understand this architecture and are ready to begin, reply exactly with: "READY FOR RTL. Please provide the top-level architecture details and the first module you would like to debug."
+
+last conversation:
+
+buradan devam et
+
+projede build tamamdı testleri devam ettirip 50 MHz frame rate konusunda işlemelr yapıyorduk UART üzerinden doğrulayarak ama crash verdi aynı şekilde devam et ve aynı zamanda paralel olarak yaptığın her şeyi claude instructions kısmına aktar
+
+
+
+
+Let me first understand the current state of the project by reading the key files and the previous conversation logs.
+
+Now let me read the previous conversation logs to understand where the crash happened:
+
+Now let me check the current state of the run_sim.ps1 and the build outputs:
+
+Let me check the existing UART log and xsim run log to understand the last state:
+
+Now I have full context. Let me also look at the sasc_brg.v more carefully to understand the exact baud rate formula:
+
+Now I have a complete understanding of the issue. Let me analyze the baud rate carefully:
+
+Key observation from uart.c line 46:
+
+Baud Rate = (fCLK/4) / ((BG0+2)*(BG1))
+With F extension (RV32F), BSP sets: BG0=4, BG1=6
+
+Intended: (16.67MHz / 4) / ((4+2) * 6) = 4.167MHz / 36 = 115,740 baud ✓
+But in simulation the clock is 50 MHz:
+
+Actual: (50MHz / 4) / ((4+2) * 6) = 12.5MHz / 36 = 347,222 baud
+Now from sasc_brg.v the formula analysis:
+
+Prescaler period = div0 + 2 clock cycles (because ps_clr is registered)
+BRG period for sio_ce_x4 = (div0 + 2) * div1 clock cycles (BRG comment says "actual number of cycles")
+sio_ce = sio_ce_x4 / 4 (4x oversampling)
+Actual baud period = (div0 + 2) * div1 * 4 clock cycles
+Wait — the comment says div1 is "Prciese number of PS cycles" but let me trace: br_cnt goes from 0 to div1, and br_clr is registered by 1 clock. So: br_cnt counts 0,1,2,...,div1 = (div1+1) ps_clr events, but br_clr is registered by 1 additional clock...
+
+Actually re-reading more carefully, the BSP comment says: (fCLK/4) / ((BG0+2)*(BG1)) — NOT (BG1+1). So the BSP formula already accounts for the BRG hardware.
+
+So baud_period per bit = 4 * (BG0+2) * BG1 clock cycles = 4 * 6 * 6 = 144 clock cycles = 144 * 20ns = 2880 ns.
+
+But the calibration says 2880 ns and the output is garbled. The previous conversation had gotten stuck in a loop trying different baud periods. The real issue is more subtle — let me look at this differently.
+
+The calibration already correctly measures 2880 ns. The header "<<< HexaChipsers..." comes through mostly correct. The issue is likely the concurrent always blocks problem — both the calibration block and the RX block trigger on negedge TXD, creating a race condition.
+
+Let me now fix this properly and run the simulation:
+
+Now I understand the full picture. The problem is clear from the xsim log:
+
+Calibration says 2880 ns — this is correct for the hardware formula
+Header partially garbled: C!BRecursive Algorithm Test >>> — the <<< HexaChip part is corrupted
+[PASS] line shows 0.000000s-E instead of Fibonacci(20) recursive
+The issue is the two concurrent always @(negedge TXD) blocks — both the calibration block and the RX block trigger simultaneously on the first byte, creating a race condition. The calibration block consumes TXD transitions (via @(posedge TXD)) that the RX block also needs.
+
+Also, the calibration measures 2880ns but this might be wrong. Let me trace more carefully:
+
+From sasc_brg.v comments: div0 = "desired number of cycles less 2", div1 = "actual number of PS cycles". With BG0=4, BG1=6:
+
+Prescaler: 4+2 = 6 clocks per ps_clr
+BRG x4: 6 ps_clr events (div1=6, but br_clr is registered... let me check if it's 6 or 7)
+Actually the key issue: the BRG comment says sio_ce_x4 is 4x baud, so actual baud = sio_ce_x4 / 4. Looking at sasc_brg.v:
+
+sio_ce_x4 fires every (div0+2)*div1 clocks (approximately)
+sio_ce fires every 4 x sio_ce_x4 events
+So baud period = 4 * (div0+2) * div1 = 4 * 6 * 6 = 144 clocks = 2880 ns.
+
+BUT WAIT — there's a subtlety. br_clr is registered, meaning br_cnt resets on the clock AFTER reaching div1. Also sio_ce_x4 has an additional pipeline delay (sio_ce_x4_r → sio_ce_x4_t → sio_ce_x4). The actual period may be longer.
+
+The real fix: Don't try to guess the baud period at all. Instead, directly monitor the UART's sio_ce signal from the DUT hierarchy to get the exact timing.
+
+Let me implement a clean solution:
+
+Now let me find the UART hierarchy path in the DUT:
+
+Now I have the full hierarchy: u_dut.U_CHIP_TOP.U_UART.BRG.sio_ce. Let me now create the proper fix. The key insight is:
+
+The UART's sio_ce signal directly provides the baud clock (1x rate)
+We can count sio_ce pulses between two pulses to find the exact baud period
+Better yet, we can directly use sio_ce to sample TXD
+But actually, the simplest and most reliable approach is to directly measure the baud period by monitoring two consecutive sio_ce rising edges. The period between them IS the baud period.
+
+Let me write the fix:
+
+Now let's clean the old xsim build and run the simulation:
+
+All 39/39 RTL files compiled successfully, testbench compiled OK, now elaborating. Let me wait:
+
+Elaboration OK! Simulation is running now. Let me wait for it to complete (50ms timeout ≈ 3 minutes sim time):
+
+Interesting — the header now reads correctly: <<< HexaChipsers Recursive Algorithm Test >>> (no more C!B corruption). But the [PASS] line is still garbled. Let me check the xsim_run.log for calibration details:
+
+Key findings from the log:
+
+sio_ce calibration works: baud_period = 2880 ns, effective baud rate = 347,222 bps ✓
+Header is correct now: <<< HexaChipsers Recursive Algorithm Test >>> ✓ (no more C!B corruption)
+But [PASS] line still garbled: [PASS] 0.000000s-E = 0x000...
+The fact that the header is fully correct proves the baud period (2880 ns) is accurate. The problem is NOT baud rate anymore. Let me analyze the garbled output:
+
+Expected: [PASS] Fibonacci(20) recursive = 0x00001a6d
+Got: [PASS] 0.000000s-E = 0x0000000000000000...
+The 0.000000s-E looks like it could be xprintf interpreting the %s or %08x format specifier incorrectly, or the test program itself is producing wrong output. The endless 0000... after 0x suggests the program is stuck in a loop printing zeros.
+
+Wait — let me look more carefully. 0.000000s-E — this looks like xprintf is printing a floating point number instead of a string. In xprintf, %s might fall through to a float case, or the va_arg is pulling the wrong argument from the stack.
+
+Let me check the xprintf.c implementation more carefully:
+
+Now I see the critical insight. Let me check the xprintf.h to see XF_USE_FP and printf mapping:
+
+XF_USE_FP = 1 — so xprintf supports %f/%e/%E format. But in test_common.h, the tests use printf(...) not xprintf(...). Let me check how printf is mapped:
+
+printf is NOT defined as xprintf in test_common.h! The tests use standard printf from libc. But the build links with -lc -lgcc and the xprintf library. The standard printf from newlib/libc would use _write syscall which likely maps through libc-hooks.c.
+
+CRITICAL FINDING: The _stdout_hook is initialized to _stdout_hook_default which returns EOF and does nothing (line 36-41). The _write function (which libc printf uses) calls _stdout_hook. But nobody calls __stdout_hook_install() to set it up!
+
+Meanwhile, UART_Init() calls xdev_out(UART_TxD) (in uart.c:76) which sets up xprintf's output — but NOT libc's _stdout_hook.
+
+The root cause: The tests use printf() from libc (which goes through _write → _stdout_hook → does nothing/EOF), NOT xprintf(). The header string <<< HexaChipsers...>>> is sent via printf("\n<<< HexaChipsers Recursive Algorithm Test >>>\n\n"). But wait, if _stdout_hook does nothing, how does any output reach UART at all?
+
+Let me re-check — the putchar function in uart.c (line 112-121) provides a putchar implementation. Newlib's printf calls _write, which calls _stdout_hook. But putchar in uart.c might override newlib's putchar.
+
+Actually, let me look more carefully at the build script:
+
+I see — build script uses -nostdlib -nostartfiles and links BSP files including libc-hooks.c. But with -nostdlib, the standard printf from newlib might not be linked! Let me check:
+
+Wait, looking at the build script at line 111: $allFlags = $CFLAGS + $LDFLAGS + @("-Wl,-Map=$mapFile", "-o", $elfFile) + $BspSrcs + @($testSrc). There's NO -lc -lgcc link flags here. The CLAUDE_INSTRUCTIONS says -lgcc -lc -lgcc was needed. But the build script doesn't include them!
+
+Hmm, but the build said it passed. With -nostdlib and no -lc, standard printf won't be linked. But then how does printf resolve? Let me check:
+
+The test_common.h includes xprintf.h which provides xprintf. But the macros use printf(...) not xprintf(...). Since newlib printf isn't linked (no -lc), the compiler might resolve printf to... a builtin? Or it could fail to link.
+
+Wait, -nostdlib means no standard C library, but -lc can still link parts. Looking at the build flags again: there's -nostdlib in CFLAGS and LDFLAGS but the build script doesn't add -lgcc -lc -lgcc. But earlier notes say the build succeeded. Let me check the map file to see how printf is resolved:
+
+There's NO printf symbol (only xprintf). The compiler with -O2 likely inlined/optimized the printf calls. With -nostdlib, GCC may convert printf calls to puts or direct function calls. Let me check what happens at disassembly level:
+
+CRITICAL FINDING: There is no printf, no puts, no putchar, no _write in the final binary! Only xprintf and xvfprintf are linked.
+
+This means GCC is optimizing printf(...) calls to built-in versions and since -nostdlib prevents linking the standard library, the printf call is either:
+
+Being converted to puts by GCC (for printf("string\n") calls) but puts isn't linked either
+Being discarded entirely
+Or GCC is converting it to something unexpected
+Wait — actually, with -nostdlib and no -lc, calling printf should produce a linker error! Unless GCC is converting printf("...\n") to puts("...") (a common optimization), and then there's no puts symbol either...
+
+But the build succeeded! This means printf must be resolving somewhere. Let me check if it's being resolved to xprintf:
+
+There's NO puts, NO putchar, NO _write. The printf calls in test_common.h macros link to NOTHING! GCC must be converting them to builtins that get optimized out, or the output goes nowhere.
+
+Wait — the printf in test_common.h is the standard C printf. With -nostdlib, this needs to be provided. Let me actually check the disassembly to see what the TEST_CHECK_EQ macro compiles to:
+
+Interesting! The disassembly shows xvfprintf contains calls to __muldf3 (soft-float double multiplication) — this is the ftoa function for floating point formatting! It IS xprintf that's doing the output.
+
+So printf in the test macros must resolve to xprintf. Let me check:
+
+NOW I see it clearly! At address 90003548, main calls xprintf (not printf). At 9000358c, it checks fib_recursive(20) == 0x1a6d. If fail, it falls through to load the [FAIL] format string. If pass, it jumps to 90003c34.
+
+So the code IS calling xprintf correctly. The issue is: when TEST_CHECK_EQ is called with "Fibonacci(20) recursive" string and the hex value, xprintf has format "[PASS] %s = 0x%08x\n".
+
+BUT WAIT — looking at xvfprintf, the %s case (line 314-322 of xprintf.c) does p = va_arg(arp, char*). And %08x does va_arg(arp, unsigned int). These are correct for the ilp32f ABI.
+
+The output 0.000000s-E looks like floating point output. This is the ftoa function producing 0.000000 then s-E... Wait, that would be 0.000000 followed by the test name... No, that doesn't make sense.
+
+Actually: 0.000000s-E could be:
+
+0.000000 = float formatting of 0.0
+s-E = residual from format parsing
+Wait — could there be a va_arg alignment issue? With ilp32f ABI and soft-float doubles in xprintf (which uses va_arg(arp, double) for %f), there could be ABI mismatch. If xprintf is compiled with a different ABI...
+
+Actually, let me re-read the output more carefully. The simulation shows:
+
+[PASS] 0.000000s-E = 0x000000000000000000...
+This is a SINGLE line of output. [PASS]  is correct (6 chars), then 0.000000s-E = 0x000....
+
+Wait — what if xprintf is treating %s as triggering the float formatter? Let me check: in xvfprintf, at line 301, the switch statement:
+
+case 's': → string handler (line 314)
+case 'f': → float handler (line 324)
+case 'e': → float handler (line 325)
+case 'E': → float handler (line 326)
+But before the switch, at line 292, there's if (c == 'l') { f |= 4; c = *fmt++; }. What if during %08x parsing, the '0' triggers pad='0', then '8' sets width=8, then 'x' → hex. That should be fine.
+
+For %s, there's no length prefix. c = 's' → case 's' → p = va_arg(arp, char*). This should work.
+
+Unless... the va_arg implementation is broken! With -nostdlib -nostartfiles, the va_arg is a compiler builtin. If there's a register ABI mismatch...
+
+Actually, I think the issue might be different. Let me look at what [PASS] 0.000000s-E really is. The format string in TEST_CHECK_EQ is "[FAIL] %s: got 0x%08x, expected 0x%08x\n". Wait, no — for PASS it's "[PASS] %s = 0x%08x\n".
+
+What if the % parsing is consuming %s but not reading the argument correctly — the string pointer is 0 or invalid? Then strlen(NULL) would crash, but there's a null check on line 316: if (!p) p = ""; — so a null pointer would print empty.
+
+But we see 0.000000s-E not an empty string. This is weird...
+
+HOLD ON — let me look at this character-by-character. After [PASS] , the next chars are 0.000000s-E. What if this isn't xprintf output but garbled UART bytes?
+
+If the baud rate has a tiny error, the first few chars can be right but accumulate timing drift. Let me think: 2880 ns per bit, 8+1+1 = 10 bits per byte = 28800 ns per byte. After ~6 bytes ([PASS] ), drift = 6 * (error per byte). If error is even 1 clock cycle (20ns) per byte, after 6 bytes that's 120ns drift out of 2880ns bit period ≈ 4% — still within tolerance.
+
+But after the header (50+ chars), the drift would be 50 * 20 = 1000ns = 35% of a bit period. That would definitely cause bit errors!
+
+THIS IS THE ROOT CAUSE! The baud period measured from sio_ce might be very slightly off because of the registered pipeline stages in sasc_brg.v. Each sio_ce pulse is generated through 3 pipeline stages of registered logic, and the period between two sio_ce pulses may not exactly equal the UART bit period.
+
+Let me trace the exact timing chain:
+
+ps_clr = (ps == div0) — registered
+br_clr = (br_cnt == div1) — registered
+sio_ce_x4_r = br_clr — registered
+sio_ce_x4_t = !sio_ce_x4_r & br_clr — registered (edge detect)
+sio_ce_x4 = sio_ce_x4_t — registered
+cnt increments on !sio_ce_x4_r & br_clr — registered
+sio_ce_r = (cnt == 2'h0) — registered
+sio_ce = !sio_ce_r & (cnt == 2'h0) — registered (edge detect)
+So sio_ce is a pulse that fires every 4 sio_ce_x4 cycles. The period between consecutive sio_ce pulses should be exactly 4 * (div0+2) * div1 clock cycles. But let me verify:
+
+With div0=4, div1=6: prescaler period = 6 clocks, br_cnt period = 6 ps_clr events = 66 = 36 clocks. So sio_ce_x4 fires every 36 clocks. sio_ce fires every 436 = 144 clocks = 2880 ns. This matches our measurement.
+
+But the actual UART transmitter in sasc_top uses sio_ce to clock its state machine. The bit period as seen on TXD should be EXACTLY equal to the sio_ce period. So 2880 ns should be exact.
+
+Let me try a completely different approach. Instead of guessing, let me directly tap the sio_ce signal to sample TXD at exactly the right time:
+
+Now I understand the TX logic. From sasc_top.v:
+
+
+Line 178-180: hold_reg shifts out on sio_ce — this means txd_o changes on sio_ce pulses (line 182-187). The transmitter updates txd_o when sio_ce is asserted. So the bit period on TXD is EXACTLY the sio_ce period.
+
+
+And our measurement of sio_ce gave 2880 ns. So the baud period IS correct.
+
+
+But the output is garbled after [PASS] . Let me think about what 0.000000s-E means...
+
+
+Wait. Looking at xvfprintf lines 323-331:
+
+
+c
+case 'f':  // Float (decimal)
+case 'e':  // Float (e)
+case 'E':  // Float (E)
+    ftoa(p = str, va_arg(arp, double), prec, c);
+va_arg(arp, double) — on RV32 ILP32F ABI, a double is 8 bytes passed in integer registers (since FPU only handles single-precision). If the va_arg stack is misaligned by even 1 word, the double read will pick up wrong data.
+
+
+But the format string for PASS is "[PASS] %s = 0x%08x\n". There's no %f or %e in there! The %s should match case 's' and %08x should match case 'x'.
+
+
+Unless the UART output is producing what looks like float formatting but it's actually correct UART output that just happens to look like 0.000000. Let me reconsider...
+
+
+Actually, let me think about what ASCII characters have values that would look like 0.000000s-E:
+
+
+0 = 0x30
+. = 0x2E
+0 = 0x30 (repeated 6 times)
+s = 0x73
+- = 0x2D
+E = 0x45
+The CORRECT output should be Fibonacci(20) recursive:
+
+
+F = 0x46
+i = 0x69
+b = 0x62
+o = 0x6F
+n = 0x6E
+a = 0x61
+c = 0x63
+c = 0x63
+i = 0x69
+If each bit is shifted by ~1 bit position due to timing drift:
+
+
+F (0x46 = 01000110) shifted right 1 = 00100011 = 0x23 = #
+That doesn't match 0 (0x30).
+Let me try another theory — maybe the sio_ce period is wrong by a small integer amount. Let me check if dividing the BRG formula differently gives a different result.
+
+
+Actually, let me just take a completely different approach. Instead of trying to calculate or measure the baud period, let me directly tap the UART transmit shift register from the DUT hierarchy. I can read txd_p (the data byte before
+
+Let me first understand the current state of the project by reading the key files and previous conversation context.
+
+Now let me read the previous conversation logs and the existing simulation scripts and outputs:
+
+Now let me check the latest UART log and simulation run log:
+
+Now I can see the exact problem. The header <<< HexaChipsers Recursive Algorithm Test >>> comes through correctly, but the first test output [PASS] Fibonacci(20) recursive = 0x00001a6d is garbled as [PASS] 0.000000s-E = 0x0000... with infinite zeros. This is clearly an xprintf va_arg issue where %s is being interpreted as %f (float). Let me check the test source and xprintf implementation:
+
+Now I see the root cause clearly. The test_common.h uses printf() — not xprintf(). Let me check the xprintf.h to see how printf is mapped:
+
+Now I see the critical bug: The build uses -nostdlib -nostartfiles but does not add -lgcc -lc -lgcc linker flags (line 111 of build.ps1). The test_common.h uses printf() which is standard C, not xprintf(). Without -lc, GCC can't resolve printf to newlib, so it either:
+
+Converts printf("format\n", ...) to some builtin
+Or the binary has unresolved references
+Let me check what actually happens in the compiled binary and the test source:
+
+Now let me check the map file to understand how printf is resolved:
+
+There's xprintf in the binary but NO printf symbol. And there's a putchar function. The test_common.h macros use printf() — but this is resolved to... Let me check if GCC is converting printf to puts/putchar:
+
+Let me search more specifically for the main function and how printf is called:
+
+Now I can see the key insight: GCC IS resolving printf → xprintf! Looking at main:
+
+90003548: jal 900026e4 <xprintf> — the header printf call goes to xprintf ✓
+So the test macros' printf() calls are being resolved to xprintf() by the compiler. The header prints correctly. But the TEST_CHECK_EQ format "[PASS] %s = 0x%08x\n" produces [PASS] 0.000000s-E = 0x0000....
+
+The output 0.000000s-E looks like ftoa() with fmt='e'/'E' producing 0.000000 followed by format suffix. Let me check if the problem is with how printf calls xprintf — GCC might be compiling printf(fmt, str, val) differently than xprintf(fmt, str, val) because printf has a known prototype (from <stdio.h>) and GCC may apply format-specific optimizations.
+
+The critical issue: printf with -nostdlib and no <stdio.h> include — GCC has a builtin printf. When GCC sees printf("[PASS] %s = 0x%08x\n", name, val), it may transform it. But xprintf doesn't have the same prototype.
+
+Wait — let me check how printf is being resolved to xprintf. There's no #define printf xprintf in the headers!
+
+Found it! common.h at line 29 has #define printf xprintf! And test_common.h includes common.h at line 13. So printf() IS correctly mapping to xprintf() — the disassembly confirms this.
+
+Now the question is: why does xprintf("[PASS] %s = 0x%08x\n", name, val) produce [PASS] 0.000000s-E = 0x0000...?
+
+The %s in xvfprintf goes to case 's': p = va_arg(arp, char*);. But 0.000000 is the ftoa output for float format. This means xvfprintf is somehow hitting the case 'f':/case 'e':/case 'E': path instead of case 's':.
+
+Wait — let me look at xvfprintf more carefully. At line 301, the switch statement uses c which is the format character. Looking at the flow:
+
+c
+c = *fmt++;  // gets '%'
+// ... parse flags, width ...  
+c = *fmt++;  // gets '0' → pad = '0'
+c = *fmt++;  // gets '8' → w = 8 
+c = *fmt++;  // gets 'x' → switch: case 'x': r = 16
+Wait, but the first format is %s, not %08x. Let me re-trace more carefully with the format string "[PASS] %s = 0x%08x\n":
+
+Characters [PASS]  are output directly — this matches the output ✓
+% is found → enter format parsing
+c = 's' → switch → case 's' → p = va_arg(arp, char*) → should print the test name
+But the output shows 0.000000s-E instead of Fibonacci(20) recursive. This means va_arg is returning the wrong value.
+
+The issue must be at the ABI level. With -O2, GCC may be passing the printf arguments differently than what xprintf expects. Since printf is a GCC builtin with known prototype, and xprintf has void xprintf(const char* fmt, ...), they should match. BUT — the #define printf xprintf means GCC sees xprintf(fmt, ...) not printf(fmt, ...), so builtin optimizations don't apply.
+
+Wait, let me reconsider. The output 0.000000s-E — what if %s is correctly printing a string, but the string pointer is wrong and happens to point to data that looks like 0.000000s-E? No, that's too coincidental.
+
+Actually — I think the problem might be more subtle. Let me look at the disassembly at 90003548 (the header printf):
+
+90003534:  lui a0, 0x9000a      // a0 = format string address (header)
+...
+90003548:  jal 900026e4 <xprintf>
+Then at 900035b4 (the first TEST_CHECK_EQ for fail case):
+
+900035a0:  addi a1, a1, -1984   # a1 = "[FAIL] %s: got 0x%08x..."
+900035a4:  addi a0, a0, -1940   # a0 = format string... wait
+900035a8:  mv a2, s5            # a2 = actual value
+...
+900035b4:  jal 900026e4 <xprintf>
+Wait, that's the FAIL case. For the PASS case at 90003c34:
+
+Now I can see the PASS path at 90003c34:
+
+asm
+90003c34:  lw a5, 100(s3)        # test_pass_count
+90003c38:  lui s4, 0x9000a       # s4 = 0x9000a000
+90003c3c:  lui a1, 0x9000a       # a1 partial
+90003c40:  addi a5, a5, 1        # pass_count++
+90003c44:  addi a1, a1, -1984    # a1 = "Fibonacci(20) recursive" string
+90003c48:  addi a0, s4, -1960    # a0 = "[PASS] %s = 0x%08x\n" format string
+90003c4c:  mv a2, s5             # a2 = actual value (fib_recursive(20) result)
+...
+90003c54:  jal 900026e4 <xprintf>
+So: xprintf(a0="[PASS] %s = 0x%08x\n", a1="Fibonacci(20) recursive", a2=6765)
+
+In RV32 ilp32f ABI, the first argument is in a0, second in a1, third in a2. For xprintf(const char* fmt, ...), the variadic args start from a1. Inside xvfprintf, va_arg(arp, char*) should get a1 (the string pointer), and va_arg(arp, unsigned int) should get a2 (the value).
+
+This looks correct at the ABI level. The arguments are in the right registers. So why is the output wrong?
+
+Let me think about this differently. The header <<< HexaChipsers Recursive Algorithm Test >>> is correct. That means xprintf works for simple strings. But the first TEST_CHECK_EQ produces garbage.
+
+Wait — let me re-examine the output: [PASS] 0.000000s-E = 0x0000.... The [PASS]  prefix is correct (6 chars + space). Then 0.000000 is followed by s-E.
+
+What if %s is printing something, but the string pointer is corrupted? The string Fibonacci(20) recursive is in ROM. What if ROM is not fully loaded? Let me check the rom.memh format:
+
+OK, so #define printf xprintf is confirmed in common.h line 29, and common.h also includes <stdio.h>. But the important thing is that common.h has the #define printf xprintf after the #include "xprintf.h", so all printf calls become xprintf.
+
+Now here's what I notice at line 17 of common.h: #include <stdio.h>. With -nostdlib, stdio.h is still provided by the toolchain headers (it's a header, not a library), and it declares int printf(const char *, ...) with GCC's __attribute__((format(printf, 1, 2))). But since #define printf xprintf comes after, the macro replaces the call.
+
+However — the key issue: #include <stdio.h> before #define printf xprintf means stdio.h declares printf as a GCC builtin. Then the #define printf xprintf redirects all calls. But GCC's -O2 might still apply printf-specific optimizations based on the earlier declaration before the macro fires.
+
+Actually no, macros work at the preprocessor level — they replace ALL occurrences of printf token, so xprintf(...) is what the compiler actually sees.
+
+Let me focus on another possibility. The output 0.000000s-E has a very specific pattern:
+
+0.000000 = ftoa output with fmt='f', val=0.0, prec=6 (default)
+s-E = residual format characters
+What if the switch statement in xvfprintf at the compiled level has a jump table issue? Looking at the disassembly, at 90000b28:
+
+asm
+90000b28:  addi a5, s1, -69    # a5 = c - 'E' (69 = 0x45 = 'E')
+90000b2c:  zext.b a5, a5        # zero extend
+90000b34:  bltu a4, a5, ...     # bounds check
+90000b38:  lw a4, 48(sp)        # load jump table base
+90000b3c:  sh2add a5, a5, a4   # a5 = jump_table_base + (c - 'E') * 4
+This is a jump table optimization. The compiler creates a table indexed by c - 'E'. The character 's' = 115, 'E' = 69, so index = 115 - 69 = 46.
+
+The jump table is stored in .rodata.xvfprintf section. If ROM is not loaded correctly — or if the jump table entries are wrong due to a linker/memory issue — then case 's' might jump to the wrong handler!
+
+Let me check the RAM module to see if the full ROM is loaded:
+
+CRITICAL BUG FOUND! Look at RAM.v lines 57-71:
+
+verilog
+reg [7:0] rom [0:65535];  // temp ROM: 64K bytes
+...
+for (a = 0; a < 16384 && a < MEM_DEPTH; a = a + 1)
+The ROM temp buffer is 65536 bytes = 64KB. The loop copies to RAM up to min(16384, MEM_DEPTH) words = 16384 × 4 = 65536 bytes max.
+
+But the rom.memh has 40308 lines = 40308 bytes. The ROM address range from the linker is 0x90000000 base. The binary is about 40KB which fits in 64KB.
+
+BUT — the RAM_SIZE = 32768 (default parameter) means MEM_DEPTH = 32768/4 = 8192 words, and only 8192 × 4 = 32768 bytes are loaded! The binary is 40308 bytes, so the last ~8KB is not loaded into memory!
+
+The string data .rodata section is likely in the upper portion of the binary. Let me check:
+
+Now I can see the memory layout:
+
+Section	Address	Size	Offset from 0x90000000
+Let me analyze the key findings and create a focused fix.
+
+Root cause identified: The ROM binary is ~40KB but RAM_SIZE=32768 (32KB default), so .rodata at offset ~38KB is never loaded into memory. The string pointers for test names point to uninitialized (zero) memory, causing xprintf's %s to output garbage.
+
+Let me check exactly where RAM is instantiated and what size is used:
+
+In SIMULATION mode, RAMI_SIZE = 16*1024*1024 = 16MB and RAMD_SIZE = 16MB. So the RAM module parameter is correctly set to 16MB in simulation mode. But let me check if the RAM.v module's init loop is limited:
+
+Looking at RAM.v line 57-71 again:
+
+verilog
+reg [7:0] rom [0:65535];   // ONLY 64KB temp buffer!
+...
+for (a = 0; a < 16384 && a < MEM_DEPTH; a = a + 1)  // ONLY loads 16384 words = 64KB
+The temp ROM is only 64KB, and the loop only copies 16384 words (64KB). With MEM_DEPTH = 16MB/4 = 4M words, the a < 16384 limit caps it at 64KB. Our binary is ~40KB so it should fit within 64KB.
+
+Wait — actually 40308 bytes < 65536 bytes. So the binary DOES fit. But does $readmemh load correctly? The rom array has 65536 entries, and rom.memh has 40308 lines. This should work — the remaining entries stay 0.
+
+Let me re-examine. The .rodata section is at address 0x9000_93F4 (2415957876 decimal). The offset from base 0x90000000 is 0x93F4 = 37876 bytes. This is well within the 64KB limit. So the ROM data IS loaded correctly.
+
+Let me take a completely different approach — let me look at this from the UART perspective and check if it's actually a timing drift issue:
+
+Now let me check Get_System_Freq() — in simulation at 50MHz, which branch does the UART_Init take?
+
+Get_System_Freq() reads misa and checks bit 5 (F extension). Since we compile with RV32IMAF, MISA.F=1, so it returns 16666667 (not 20000000). UART_Init takes the else branch: BG0=4, BG1=6.
+
+With 50MHz simulation clock: Baud = (50MHz/4) / ((4+2)*6) = 12.5MHz / 36 = 347,222 bps. Baud period = 1/347222 = 2880ns. This matches our sio_ce measurement.
+
+Now the key question — why is the data garbled after a correct header? The header has ~50 chars that come through fine, then the first test output is garbled. Let me think about this differently.
+
+The output 0.000000s-E is exactly what ftoa would produce for val=0.0, prec=6, fmt='e': it outputs +0.000000e+00. But we'd need to see how it enters the float case...
+
+Wait — let me re-read the output character by character: [PASS] 0.000000s-E = 0x0000...
+
+What if it's NOT garbled UART but actual program output? What if va_arg(arp, char*) is picking up a double value from the stack instead of a char*? On RV32 ilp32f, a double argument is passed as 2 words in integer registers/stack. If va_arg(arp, char*) consumes only 1 word, then the va_arg(arp, unsigned int) for %08x consumes the second word of the double, and then the subsequent characters in the format are parsed wrong...
+
+Actually, wait. On ilp32f ABI, double values in variadic functions are passed as 2 words on the stack (not in FP registers). A char* pointer is 1 word. If the caller pushes (char*, unsigned int) = 2 words total, and xprintf's va_arg(arp, char*) reads 1 word for %s, then va_arg(arp, unsigned int) reads the next word for %08x, everything should be fine.
+
+BUT — what if GCC is somehow passing the arguments differently? Let me look at the calling convention at the PASS path more carefully:
+
+At 90003c34:
+
+a0 = format string "[PASS] %s = 0x%08x\n" 
+a1 = "Fibonacci(20) recursive" string pointer
+a2 = 6765 (0x1a6d)
+In xprintf(const char* fmt, ...), fmt is in a0. The variadic args start from a1. In xvfprintf, va_start(arp, fmt) initializes arp to point to args after fmt. va_arg(arp, char*) should get a1, and va_arg(arp, unsigned int) should get a2.
+
+This should work! Unless... let me check if there's an issue with the xprintf wrapper itself:
+
+c
+void xprintf(const char* fmt, ...) {
+    va_list arp;
+    va_start(arp, fmt);
+    xvfprintf(xfunc_output, fmt, arp);
+    va_end(arp);
+}
+xvfprintf receives va_list arp by value. On RV32, va_list is typically a pointer (to the stack area where variadic args are stored). This should work fine.
+
+Let me try yet another approach — let me add debug output to the testbench to print the exact hex values of each received byte, so we can see precisely what's being transmitted:
+
+The UART monitor looks correct. The approach of using negedge TXD as trigger with uart_baud_period/2 centering should work. But there might be a subtle timing issue.
+
+Let me think about what 0.000000s-E really represents. Let me check — what if the UART is correctly receiving characters but the program itself is outputting this? Let me add hex debug output. I'll modify the testbench to also log hex values of each byte, then run the simulation:
+
+Now let me compile and run the simulation:
+
+Elaboration passed. Now let's run the simulation:
+
+The header is perfectly received — every byte matches exactly. No UART timing issues at all. Now let me wait for the test output bytes:
+
+The bytes 52-58 spell [PASS]  — correct. There's a big time gap between byte 51 and 52 (from 1.48s to 6.44s) which is the time for fib_recursive(20) computation. Now let me see what comes next

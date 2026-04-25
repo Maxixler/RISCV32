@@ -1,0 +1,7 @@
+HexaChipsers Trace Comparison Report
+RTL:   c:\Users\DELL\Downloads\HexaChipsers-Core\Testler\trace_verification\rtl_trace_dummy.txt
+Spike: c:\Users\DELL\Downloads\HexaChipsers-Core\Testler\trace_verification\spike_trace_sample.log
+Result: PASS
+Matched: 20, Mismatched: 0
+
+WARNING: Trace length mismatch: RTL=20, Spike=78916

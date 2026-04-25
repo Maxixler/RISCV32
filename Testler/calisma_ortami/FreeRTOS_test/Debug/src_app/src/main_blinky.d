@@ -1,0 +1,61 @@
+src_app/src/main_blinky.o: ../src_app/src/main_blinky.c \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/FreeRTOS.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/FreeRTOSConfig.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/projdefs.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/portable.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/deprecated_definitions.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/portmacro.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/mpu_wrappers.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/queue.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/task.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/list.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/semphr.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/queue.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/task.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/riscv-virt.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/riscv-reg.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_app/inc/gpio.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_app/inc/common.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_app/inc/xprintf.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_app/inc/uart.h \
+ /home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_app/inc/xprintf.h
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/FreeRTOS.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/FreeRTOSConfig.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/projdefs.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/portable.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/deprecated_definitions.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/portmacro.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/mpu_wrappers.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/queue.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/task.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/list.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/semphr.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/queue.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/task.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/riscv-virt.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_kernel/inc/riscv-reg.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_app/inc/gpio.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_app/inc/common.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_app/inc/xprintf.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_app/inc/uart.h:
+
+/home/dogukan/mmRISC-1/workspace/mmRISC_FreeRTOS/src_app/inc/xprintf.h:

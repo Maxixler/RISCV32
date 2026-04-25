@@ -1,0 +1,72 @@
+# Claude Code Memory
+.claude/
+
+# Build outputs
+*.elf
+*.hex
+*.map
+*.lst
+*.mem
+*.memh
+*.mem.v
+*.o
+*.a
+
+# Vivado files
+*.jou
+*.log
+*.pb
+*.wdb
+*.xpr
+*.cache
+*.hw
+*.runs
+*.ip_user_files
+*.gen
+*.tcl
+*.bit
+*.bin
+
+# Xilinx simulation files
+xsim.dir/
+*.xsim
+*.xsim.dir
+*.dbg
+*.mem
+*.rtti
+*.sdb
+*.rlx
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+
+# Windows executables
+*.exe
+*.dll
+
+# Archive files
+*.tar.gz
+*.zip
+*.rar
+
+# Turkish character paths (git compatibility issues)
+Derleyici Dosyalari/
+Verilog Dosyalari/
