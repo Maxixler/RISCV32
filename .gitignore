@@ -61,7 +61,7 @@ Thumbs.db
 # Windows executables
 *.exe
 *.dll
-*.txt
+
 # Archive files
 *.tar.gz
 *.zip
